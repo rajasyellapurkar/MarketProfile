@@ -1,0 +1,6 @@
+c:\users\rajas\documents\visual studio 2012\Projects\MarketProfileGenerator\MarketProfileGenerator\bin\Debug\MarketProfileGenerator.exe.config
+c:\users\rajas\documents\visual studio 2012\Projects\MarketProfileGenerator\MarketProfileGenerator\bin\Debug\MarketProfileGenerator.exe
+c:\users\rajas\documents\visual studio 2012\Projects\MarketProfileGenerator\MarketProfileGenerator\bin\Debug\MarketProfileGenerator.pdb
+c:\users\rajas\documents\visual studio 2012\Projects\MarketProfileGenerator\MarketProfileGenerator\obj\Debug\MarketProfileGenerator.csprojResolveAssemblyReference.cache
+c:\users\rajas\documents\visual studio 2012\Projects\MarketProfileGenerator\MarketProfileGenerator\obj\Debug\MarketProfileGenerator.exe
+c:\users\rajas\documents\visual studio 2012\Projects\MarketProfileGenerator\MarketProfileGenerator\obj\Debug\MarketProfileGenerator.pdb

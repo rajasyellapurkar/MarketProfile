@@ -1,0 +1,621 @@
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Text;
+using System.Threading.Tasks;
+using System.Net;
+using System.IO;
+using System.Configuration;
+using _3IStocks;
+
+
+namespace StockPicker
+{
+    /*The code uses Initiative Tail or Responsive tail, Initiative range extesion (range extension in previous day's value area) and 
+     * Initiative TPO Count to pick the stocks.*/
+    public class Program
+    {
+        public RangeExtensionObject rangeObj { get; set; }
+        private static readonly log4net.ILog log = log4net.LogManager.GetLogger(System.Reflection.MethodBase.GetCurrentMethod().DeclaringType);
+
+        public static void Main(string[] args)
+        {
+           string[] FOList;
+            try
+            {
+                FOList = File.ReadAllLines(ConfigurationManager.AppSettings["FilePath"]);
+            }
+            catch
+            {
+                throw new Exception("Error in opening the FOList file");
+            }
+            Console.WriteLine("Process Started \n");
+            log.Info("Process has Started");
+
+            int count = 1; int total = FOList.Count();
+
+            foreach (string s in FOList)
+            {
+                try
+                {
+                    log.Info(string.Format("{0} : Processing {1} out of {2}", s, count++, total));
+                    string quote = Extract("https://www.google.com/finance/getprices?q=" + s.ToUpper() + "&x=NSE&i=1800&p=2d&f=c,h,l,o");
+                    string[] quoteArray = quote.Split('\n');
+
+                    List<double> TPOHigh = new List<double>();
+                    List<double> TPOLow = new List<double>();
+                    List<double> TPOOpen = new List<double>();
+
+                    for (int i = 7; i < quoteArray.Length - 1; i++)
+                    {
+                        string[] parseHL = quoteArray[i].Split(',');
+                        TPOHigh.Add(Double.Parse(parseHL[1]));
+                        TPOLow.Add(Double.Parse(parseHL[2]));
+                        TPOOpen.Add(Double.Parse(parseHL[3]));
+                    }
+                    
+                    double high = TPOHigh.Max();
+                    double low = TPOLow.Min();
+                    double dayRange = high - low;
+                    double dayAverage = (high + low) / 2;
+                    double tickSize = dayAverage * 0.001;
+                    int arrayRowSize = (int)Math.Ceiling(dayRange / tickSize);
+                    int arrayColSize = 27;
+                    char c = 'A';
+                    arrayRowSize++;
+                    double[] b = new Double[arrayRowSize];
+                    b[0] = high;
+
+                    for (int i = 1; i < b.Length; i++)
+                    {
+                        b[i] = b[i - 1] - tickSize;
+                    }
+
+
+                    char[,] a = new Char[arrayRowSize, arrayColSize];
+                    int openIndex = 0;
+                    
+                    for (int i = 0; i < TPOHigh.Count(); i++)//TPOHigh.Count
+                    {
+                        int openCol;
+                        if ((i % 13) == 0)
+                        {
+                            c = 'A';
+                        }
+                        int startIndex = findIndex(b, TPOHigh[i]);
+                        int stopIndex = findIndex(b, TPOLow[i]);
+                        for (int row = startIndex; row <= stopIndex; row++)
+                        {
+                            a[row, i] = c;
+                        }
+                        if ((i % 13) == 0)
+                        {
+                            /*Bug Fix: Doesn't show open 'O' for 30mins interval*/
+                            openIndex = findIndex(b, TPOOpen[i]);
+                            openCol = i;
+                            a[openIndex, openCol] = 'O';
+                        }
+                        c++;
+                   }
+
+
+                    int colSize = arrayColSize + ((arrayColSize / 13));
+                    char[,] d = new char[arrayRowSize, colSize];
+
+                    /*Build day 2 array*/
+                    char[,] day2 = new char[arrayRowSize, 13];
+                    for (int row = 0; row < arrayRowSize; row++)
+                    {
+                        for (int col = 0; col < 13; col++)
+                        {
+                            day2[row, col] = a[row, (col + 13)];
+                        }
+
+                    }
+
+                    Tail tail = new Tail();
+                    Tails(day2,tail);
+                    
+                    int TPOSellerCount;
+                    int TPOBuyerCount;
+                    int pocDay1 = PointOfControl(a, out TPOSellerCount, out TPOBuyerCount);
+                    /*Override the TPO counts*/
+                    int pocDay2 = PointOfControl(day2, out TPOSellerCount, out TPOBuyerCount);
+                    int rotaitonFactor = RotationFactor(TPOHigh, TPOLow);
+                    string symbol = s.ToUpper();
+
+                    ValueAreaObj vObj = new ValueAreaObj();
+
+                    ValueArea(a, pocDay1, vObj);
+
+                    vObj.UpValue = b[vObj.UpIndex];
+                    vObj.DownValue = b[vObj.DownIndex];
+
+                    Program prog = new Program();
+                    RangeExtensionObject rangObj= prog.RangeExtension(TPOHigh, TPOLow);
+
+                    //PickStockByDayEnd(tail, upIndex, downIndex, s, rangObj);
+
+                   PickStockByDayMid(tail,vObj, s, rangObj);
+                    /*
+                    for (int i = 23; i < 24; i++)
+                    {
+                        log.Info(string.Format("Day {0} started", i));
+                        BackTest.Test(i);
+                    }*/
+
+                }
+                catch (Exception e)
+                {
+                    Console.WriteLine("\nPlease enter a valid symbol or check your internet connection :\n" + "Current Stock: " +  s + "\n" + e.Message + "\n");
+                    log.Error("Error in processing \n" + "Current Stock: " +  s + "\n" + e.Message);
+                }
+
+            }
+            Console.WriteLine("Process ended");
+            log.Info("Process Ended");
+            Console.Read();
+        }
+
+        public static void PickStockByDayEnd(Tail tail, int upIndex, int downIndex, String s, RangeExtensionObject rangObj)
+        {
+
+            if (tail.BTail > 2 && ((tail.BTailStart <= downIndex && tail.BTailEnd <= upIndex) || (tail.BTailStart <= upIndex && tail.BTailEnd < upIndex)))
+            {
+                Console.WriteLine("3I BUY stock: " + s.ToUpper());
+                log.Info(string.Format("{0} : Success, 3I BUY stock",s.ToUpper()));
+            }
+            else if (tail.STail > 2 && ((tail.STailStart >= upIndex && tail.STailEnd >= downIndex) || (tail.STailStart >= downIndex && tail.STailEnd > downIndex)))
+            {
+                Console.WriteLine("3I SELL stock: " + s.ToUpper());
+                log.Info(string.Format("{0} : Success, 3I SELL stock", s.ToUpper()));
+            }
+
+            if (tail.STail > 2 && (tail.STailStart < upIndex && tail.STailEnd > tail.STailStart) && rangObj.LowExtCount > 2) //&& (TPOBuyerCount < TPOSellerCount) && rotaitonFactor < 0
+            {
+                Console.WriteLine("2I-1R SELL Stock: " + s.ToUpper());
+                log.Info(string.Format("{0} : Success, 2I-1R SELL stock", s.ToUpper()));
+            }
+            else if (tail.BTail > 2 && (tail.BTailStart > downIndex && tail.BTailEnd < tail.BTailStart) && rangObj.HighExtCount > 2) //&& (TPOBuyerCount > TPOSellerCount) && rotaitonFactor > 0
+            {
+                Console.WriteLine("2I-1R BUY Stock: " + s.ToUpper());
+                log.Info(string.Format("{0} : Success, 2I-1R BUY stock", s.ToUpper()));
+            }
+        }
+
+        /*The only difference is the Range extension count*/
+        public static bool PickStockByDayMid(Tail tail, ValueAreaObj vObj, String s, RangeExtensionObject rangObj)
+        {
+            
+            if (tail.STail > 2 && (tail.STailStart < vObj.UpIndex && tail.STailEnd > tail.STailStart) && rangObj.LowExtCount >= 1) //&& (TPOBuyerCount < TPOSellerCount) && rotaitonFactor < 0
+            {
+                #region CheckInitiativeRangeExten
+                if (rangObj.LowRangeExtVal <= vObj.DownValue)
+                {
+
+                    Console.WriteLine("2I-1R SELL Stock: " + s.ToUpper());
+                    Console.WriteLine("Previou day Value area:");
+                    Console.WriteLine("UpValue: " + vObj.UpValue.ToString("#.00"));
+                    Console.WriteLine("DownValue: " + vObj.DownValue.ToString("#.00"));
+                    Console.WriteLine(Environment.NewLine);
+                    log.Info(string.Format("{0} : Success, 2I-1R SELL stock", s.ToUpper()));
+                    return true;
+                }
+                #endregion
+                return false;
+            }
+            else if (tail.BTail > 2 && (tail.BTailStart > vObj.DownIndex && tail.BTailEnd < tail.BTailStart) && rangObj.HighExtCount >= 1) //&& (TPOBuyerCount > TPOSellerCount) && rotaitonFactor > 0
+            {
+                #region CheckInitiativeRangeExten
+                if (rangObj.HighRangeExtVal > vObj.UpValue)
+                {
+
+                    Console.WriteLine("2I-1R BUY Stock: " + s.ToUpper());
+                    Console.WriteLine("Previou day Value area:");
+                    Console.WriteLine("UpValue: " + vObj.UpValue);
+                    Console.WriteLine("DownValue: " + vObj.DownValue);
+                    log.Info(string.Format("{0} : Success, 2I-1R BUY stock", s.ToUpper()));
+                    Console.WriteLine(Environment.NewLine);
+                    return true;
+                }
+                #endregion
+                return false;
+            }
+            return false;
+        }
+
+        public static int findIndex(double[] b, double value)
+        {
+            try
+            {
+                for (int i = 0; i < b.Length - 1; i++)
+                {
+                    if (value <= Math.Round(b[i], 2) && value >= Math.Round(b[i + 1], 2))
+                    {
+                        double diff1 = b[i] - value;
+                        double diff2 = value - b[i + 1];
+                        if (diff1 <= diff2) return i;
+                        else return i + 1;
+                    }
+                }
+                return -1;
+            }
+            catch
+            {
+                throw new Exception("Exception thrown from findIndex Method");
+            }
+        }
+
+
+        public static string Extract(string googleHttpRequestString)
+        {
+            //if need to pass proxy using local configuration  
+            System.Net.WebClient webClient = new WebClient();
+            webClient.Proxy = HttpWebRequest.GetSystemWebProxy();
+            Stream strm= webClient.OpenRead(googleHttpRequestString);
+            webClient.Proxy.Credentials = CredentialCache.DefaultCredentials;
+            try
+            {
+                StreamReader sr = new StreamReader(strm);
+                string result = sr.ReadToEnd();
+                return result;
+            }
+            catch
+            {
+                throw new Exception("Exception thrown from Extract Method");
+            }
+            finally
+            {
+                strm.Close();
+            }
+            
+        }
+
+        /*Mehtod takes only first 13 columns of array in consideration
+         To understand how to calculate Value area refer the Appendix section in Mind over Market book
+         The code does exactly that.*/
+        public static void ValueArea(char[,] a, int poc, ValueAreaObj vObj)
+        {
+            int totalTPOCount = 0;
+            int rowSize = a.GetLength(0);
+            int loopCount = 0;
+            for (int row = 0; row < rowSize; row++)
+            {
+                for (int col = 0; col < 13; col++)
+                    if (a[row, col] != '\0')
+                        totalTPOCount++;
+            }
+
+            /*Value area is area where 70% of trade took place. Lets find 70% of Total TPO Count*/
+            totalTPOCount = (int)Math.Ceiling(0.7 * totalTPOCount);
+
+            char[] b = new char[13];
+
+            /*Copy the row of point of control to a dummy array*/
+            for (int i = 0; i < 13; i++)
+                b[i] = a[poc, i];
+            /*Find length of POC row*/
+            int pocRowLength = rowLength(b);
+
+            int tpoSum=0;
+            int upper1 = poc - 1;
+            int upper2 = poc - 2;
+
+            int lower1 = poc + 1;
+            int lower2 = poc + 2;
+
+            do
+            {
+                if (loopCount > 10000) throw new Exception("Value Area Calculation was not successfull");
+                int upper1Len = 0;
+                int upper2Len = 0;
+
+                if (upper1 >= 0)
+                {
+                    for (int i = 0; i < 13; i++)
+                        b[i] = a[upper1, i];
+                    upper1Len = rowLength(b);
+                }
+                if (upper2 >= 0)
+                {
+                    for (int i = 0; i < 13; i++)
+                        b[i] = a[upper2, i];
+                    upper2Len = rowLength(b);
+                }
+                int totalUpperLen = upper1Len + upper2Len;
+
+                int lower1Len = 0;
+                int lower2Len = 0;
+
+                if (lower1 < rowSize)
+                {
+                    for (int i = 0; i < 13; i++)
+                        b[i] = a[lower1, i];
+                    lower1Len = rowLength(b);
+                }
+
+
+                if (lower2 < rowSize)
+                {
+                    for (int i = 0; i < 13; i++)
+                        b[i] = a[lower2, i];
+                    lower2Len = rowLength(b);
+                }
+                int totalLowerLen = lower1Len + lower2Len;
+
+                if (totalUpperLen > totalLowerLen)
+                {
+                    tpoSum += totalUpperLen;
+                    upper1-=2;
+                    upper2-=2;
+                }
+                else
+                {
+                    tpoSum += totalLowerLen;
+                    lower1+=2;
+                    lower2+=2;
+                }
+                loopCount++;
+            } while (tpoSum < totalTPOCount);
+
+            vObj.UpIndex = upper2 >= 0 ? upper2 : (upper1 >= 0 ? upper1 : 0);
+            vObj.DownIndex = lower2 < rowSize ? lower2 : (lower1 < rowSize ? lower1 : (rowSize - 1));
+
+        }
+
+        public static int rowLength(char[] a)
+        {
+            int length=0;
+            for (int col = 0; col < 13; col++)
+                if (a[col] != '\0')
+                    length++;
+            return length;
+        }
+
+        /*This is a special method which finds row length only for those rows which contain character 'A' or 'O'. 
+         We need to find the initiative buying or selling tail which means it should contain only the 
+         start index 'A' or 'O'
+         Return length as 2 if it doesn't contain these character. 
+         This method will be called in method Tail() which stop iteration if the length is greater than one.*/
+        public static int splRowLength(char[] a)
+        {
+            int length = 0;
+            if (a.Contains('A') || a.Contains('O'))
+            {
+            for (int col = 0; col < 13; col++)
+            {
+                if (a[col] != '\0')
+                    length++;
+            }
+            return length;
+            }
+            else
+                return 2;
+        }
+
+        public static int PointOfControl(char[,] a, out int TPOSellerCount, out int TPOBuyerCount)
+        {
+            List<int> rowLength = new List<int>();
+            int rowSize = a.GetLength(0);
+            int rangeCenter = rowSize / 2;
+            for (int row = 0; row < rowSize; row++)
+            {
+                int length = 0;
+                for (int col = 0; col < 13; col++)
+                {
+                    if (a[row, col] != '\0')
+                    {
+                        length++;
+                    }
+                }
+                rowLength.Add(length);
+            }
+            int max = rowLength.Max();
+
+            /*Below line returns all the row indexes which have length equal to max*/
+            int[] v = rowLength.Select((b, i) => b == max ? i : -1).Where(i => i != -1).ToArray();
+            int minDiff = Int32.MaxValue;
+            int pocIndex = 0;
+            /*int[] v contains all indexes which have max length, below piece of code find which one is closest to center*/
+            foreach (int i in v)
+            {
+                int diff = Math.Abs(rangeCenter - i);
+                if (diff < minDiff)
+                {
+                    minDiff = diff;
+                    pocIndex = i;
+                }
+            }
+            TPOSellerCount = 0;
+            TPOBuyerCount = 0;
+            /*TPO Count of Seller is sum of all TPOs from top to one row above POC
+              Tails are excluded */
+            for (int row = 0; row < pocIndex; row++)
+            {
+                int length = 0;
+                for (int col = 0; col < 13; col++)
+                {
+                    if (a[row, col] != '\0')
+                    {
+                        length++;
+                    }
+                }
+                TPOSellerCount += length;
+            }
+
+           /*TPO Count of Buyer is sum of all TPOs from one row below POC to bottom
+           Tails are excluded */
+            for (int row = pocIndex + 1; row < rowSize; row++)
+            {
+                int length = 0;
+                for (int col = 0; col < 13; col++)
+                {
+                    if (a[row, col] != '\0')
+                    {
+                        length++;
+                    }
+                }
+                    TPOBuyerCount += length;
+            }
+
+
+            return pocIndex;
+        }
+
+
+        public static int RotationFactor(List<double> TPOHigh, List<double> TPOLow)
+        {
+            int rotationFactor = 0;
+            for (int i = 1; i < TPOHigh.Count; i++)
+            {
+                if (TPOHigh[i] > TPOHigh[i - 1])
+                    rotationFactor++;
+                else if (TPOHigh[i] < TPOHigh[i - 1])
+                    rotationFactor--;
+                 if (TPOLow[i] < TPOLow[i - 1])
+                    rotationFactor--;
+                else if (TPOLow[i] > TPOLow[i - 1])
+                    rotationFactor++;
+            }
+            return rotationFactor;
+        }
+
+        public RangeExtensionObject RangeExtension(List<double> TPOHigh, List<double> TPOLow)
+        {
+            rangeObj = new RangeExtensionObject();
+            rangeObj.HighRangeExtVal = TPOHigh[0];
+            rangeObj.LowRangeExtVal = TPOLow[13];
+
+            for (int i = 14; i < TPOHigh.Count; i++)
+            {
+                if (TPOHigh[i] > rangeObj.HighRangeExtVal)
+                {
+                    rangeObj.HighRangeExtVal = TPOHigh[i];
+                    rangeObj.HighExtCount++;
+                }
+                if (TPOLow[i] < rangeObj.LowRangeExtVal)
+                {
+                    rangeObj.LowRangeExtVal = TPOLow[i];
+                    rangeObj.LowExtCount++;
+                }
+            }
+
+            return rangeObj;
+        }
+
+        public static void Tails(char[,] a,Tail tail)
+        {
+            int rowSize = a.GetLength(0);
+            bool sTailFlag = true;
+            bool bTailFlag = true;
+            char[] b = new char[13];
+            int sTailLen = 0;
+            int bTailLen = 0;
+            tail.STailStart = -1;
+            tail.STailEnd=-1;
+            tail.BTailStart = -1;
+            tail.BTailEnd=-1;
+
+            int row=0;
+            /* Start at top of the Profile and determine the Selling tail*/
+            while(sTailFlag)
+            {
+                /*Copy each row to a dummy array and send it to function*/
+                for (int col = 0; col < 13; col++)
+                {
+                    b[col] = a[row, col];
+                }
+                int rowLen = splRowLength(b);
+
+                /*If the row length is greater than one, stop the process, tail has ended*/
+                if (rowLen > 1)
+                {
+                    sTailFlag = false;
+                    if(sTailLen>0)tail.STailEnd=row--;
+                }
+                else
+                {
+                    /*If length is 1, increment sTailCount*/
+                    if (rowLen == 1)
+                    {
+                        sTailLen++;
+                        if (tail.STailStart < 0)
+                            tail.STailStart = row;
+                    }
+                    
+                    /*Go to next row if row length is one or row is blank*/
+                    row++;
+                }
+            }
+
+            row = rowSize-1;
+
+            /*Logic remains same for determining buying tail. Only difference is loop start from both of Market Profile*/
+            while (bTailFlag)
+            {
+                for (int col = 0; col < 13; col++)
+                {
+                    b[col] = a[row, col];
+                }
+                int rowLen = splRowLength(b);
+
+                if (rowLen > 1)
+                {
+                    bTailFlag = false;
+                    if (bTailLen > 0) tail.BTailEnd = row++;
+                }
+                else
+                {
+                    if (rowLen == 1)
+                    {
+                        bTailLen++;
+                        if (tail.BTailStart < 0)tail.BTailStart= row;
+                    }
+
+                    row--;
+                }
+            }
+            tail.STail = sTailLen;
+            tail.BTail = bTailLen;
+        }
+
+
+    }
+}
+
+
+
+
+public class RangeExtensionObject
+    {
+        public double HighRangeExtVal { get; set; }
+        public double LowRangeExtVal { get; set; }
+        public int HighExtCount { get; set; }
+        public int LowExtCount { get; set; }
+    }
+
+  public class Result
+    {
+        public int bTailLen;
+        public int sTailLen;
+    }
+
+  public class Tail
+    {
+        public int STail { get; set; }
+        public int STailStart { get; set; }
+        public int STailEnd { get; set; }
+        public int BTail { get; set; }
+        public int BTailStart { get; set; }
+        public int BTailEnd { get; set; }
+
+    }
+
+ public class ValueAreaObj
+    {
+        public int UpIndex { get; set; }
+        public int DownIndex { get; set; }
+        public double UpValue { get; set; }
+        public double DownValue { get; set; }
+
+    }
